@@ -17,7 +17,7 @@ import atexit
 import sys
 import json
 import base64
-from querystring_parser import parser
+from parser import *
 
 module_name = "http-agent"
 
@@ -48,16 +48,17 @@ class HttpHandler(BaseHTTPRequestHandler):
 
             ret = self.is_module_cmd_exists(subsys, cmd)
             if ret == False:
-                raise ValueError(f"invalid ubus: {subsys}/{cmd}")
+                raise ValueError(f"Invalid ubus: {subsys}/{cmd}")
             parsed_url = urlparse(url)
             url_dict = parse_qs(parsed_url.query)
             args = {}
             if len(url_split) > 1:
-                args = parser.parse(url_split[1])
+                args = parse(url_split[1])
             return (subsys, cmd, args)
         except Exception as e:
-            print('Error during parsing -> malformed url: %s', str(e))
-        return ()
+            #print('Error during parsing -> malformed url: %s', str(e))
+            ret = f'Error during parsing -> malformed url: {str(e)}'
+            return (ret,)
 
     def do_GET(self):
         try:
@@ -74,6 +75,7 @@ class HttpHandler(BaseHTTPRequestHandler):
                 return
 
         reply_str = str()
+        reply_dict = dict()
 
         #self.send_response(200)
         #self.end_headers()
@@ -84,21 +86,37 @@ class HttpHandler(BaseHTTPRequestHandler):
         if "/favicon.ico" == query:
             return
 
+        reply_dict["netping"] = {}
+
         ubus_req = self.parse_url(query)
-        if not ubus_req:
-            reply_str = "Fail\nError parsing input url";
-            self.wfile.write(reply_str.encode("utf-8"))
+        print(ubus_req)
+        print(type(ubus_req))
+        if 1 == len(ubus_req) and isinstance(ubus_req[0],str):
+            reply_str = ubus_req[0]
+            #reply_str = f"Error parsing input url '{ubus_req[0]}'"
+            reply_dict["netping"]["result"] = "error"
+            reply_dict["netping"]["message"] = reply_str
+            self.wfile.write(json.dumps(reply_dict).encode("utf-8"))
             self.send_response(400)
             return
-        print("ubus_req:", ubus_req)
+        reply_dict["netping"]["command"] = ubus_req[0] + "/" + ubus_req[1]
+        #print("ubus_req:", ubus_req)
         self.server.q_out.put(ubus_req)
         ret = self.server.q_in.get()
         if isinstance(ret, list) and len(ret) > 1:
             reply_str = json.dumps(ret[0]) + "\n" + json.dumps(ret[1])
+            reply_dict["netping"]["result"] = ret[0]
+            if "error" == ret[0]:
+                reply_dict["netping"]["message"] = ret[1]
+            elif "ok" == ret[0]:
+                reply_dict["payload"] = ret[1]
         else:
             reply_str = "Fail\nEmpty UbusService's reply";
+            reply_dict["netping"]["result"] = "error"
+            reply_dict["netping"]["message"] = reply_str
         self.server.q_in.task_done()
-        self.wfile.write(reply_str.encode("utf-8"))
+        self.wfile.write(json.dumps(reply_dict).encode("utf-8"))
+        #self.wfile.write(reply_str.encode("utf-8"))
         return
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -166,21 +184,21 @@ class UbusService():
                         raise TypeError(f"key {k} has to be dict")
                 #print("objs:", objs)
                 res = ubus.call(item[0], item[1], objs)
-                res = ["Ok"] + res
+                res = ["ok"] + res
                 #print("ubus.call:", res)
                 self.q_in.task_done()
                 print(f'Finished {item}')
             except TypeError as e:
                 str_err = 'UbusService Texception: invalid type: {}'.format(str(e))
                 print(str_err)
-                res = ["Failed", str_err]
+                res = ["error", str_err]
             except ValueError as e:
                 str_err = 'UbusService Vexception: invalid scheme (wrong json-rpc request for ubus) : {}'.format(str(e))
                 print(str_err)
-                res = ["Failed", str_err]
+                res = ["error", str_err]
             except RuntimeError as e:
                 str_err = 'UbusService RTexception: {}'.format(str(e))
-                res = ["Failed", str_err]
+                res = ["error", str_err]
                 print(str_err)
             #except Exception as e:
             finally:

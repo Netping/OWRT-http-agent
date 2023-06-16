@@ -1,6 +1,0 @@
-
-config common 'settings'
-	option port '8080'
-	option auth_password 'pass'
-	option auth_login 'user'
-
